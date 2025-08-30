@@ -1,0 +1,11 @@
+[project]
+name = "codr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anytree>=2.13.0",
+    "docling>=2.48.0",
+    "litellm[proxy]>=1.76.0",
+]

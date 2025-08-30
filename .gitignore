@@ -1,0 +1,30 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# uv local state
+.uv/
+
+# Virtual environments and environment files
+.venv/
+.env
+.env.*
+*.env
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ICD-10 tabular files (root or subfolders)
+icd10cm_tabular_*
