@@ -98,8 +98,8 @@ def demo_scenario_2_billing_validation():
         # Step 2: Check parent context for better understanding
         chapter = nav.get_ancestors_by_type(code, 'chapter')
         section = nav.get_ancestors_by_type(code, 'section')
-        print(f"  Chapter: {chapter.name}")
-        print(f"  Section: {section.name}")
+        print(f"  Chapter: {chapter.name if chapter else 'Unknown'}")
+        print(f"  Section: {section.name if section else 'Unknown'}")
         
         # Step 3: Check for important coding notes
         if node.notes:
@@ -160,7 +160,7 @@ def demo_scenario_3_research_analysis():
     total_heart_codes = 0
     
     for section in heart_sections:
-        diagnoses = nav.get_all_diagnoses_in_section(section.code)
+        diagnoses = nav.get_all_diagnoses_in_block(section.code)
         total_heart_codes += len(diagnoses)
         print(f"  {section.code}: {section.name}")
         print(f"    Contains {len(diagnoses)} diagnostic codes")
@@ -345,9 +345,9 @@ def demo_scenario_6_performance_benchmarks():
     test_scenarios = [
         ('Direct code lookup', lambda: nav.find_by_code('A00.0')),
         ('Chapter lookup', lambda: nav.find_chapter('1')),
-        ('Section lookup', lambda: nav.find_section('A00-A09')),
+        ('Block lookup', lambda: nav.find_block('A00-A09')),
         ('Text search (single term)', lambda: nav.search_by_name('diabetes')),
-        ('Hierarchical traversal', lambda: nav.get_all_diagnoses_in_section('A00-A09')),
+        ('Hierarchical traversal', lambda: nav.get_all_diagnoses_in_block('A00-A09')),
         ('Ancestor lookup', lambda: nav.get_ancestors_by_type('A00.0', 'chapter')),
     ]
     
@@ -376,7 +376,7 @@ def demo_scenario_6_performance_benchmarks():
     print(f"Total nodes in tree: {len(list(nav.root.descendants)) + 1:,}")
     print(f"Indexed codes: {len(nav.code_to_node):,}")
     print(f"Chapter index: {len(nav.chapters):,} entries")
-    print(f"Section index: {len(nav.sections):,} entries")
+    print(f"Block index: {len(nav.blocks):,} entries")
     print(f"Diagnosis index: {len(nav.diagnoses):,} entries")
     
     # Estimate memory usage (rough approximation)

@@ -110,7 +110,7 @@ def demo_generic_completion_interface():
     question = "What are the benefits of using type hints in Python?"
     
     # Test different providers using the same interface
-    providers = ["keywell", "anthropic", "openai", "gemini"]
+    providers = ["keywell", "anthropic", "openai",]# "gemini"]
     
     for provider in providers:
         print(f"Using {provider} provider:")
