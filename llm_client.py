@@ -25,6 +25,10 @@ DEFAULTS = {
         "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
         "api_key": os.getenv("GEMINI_API_KEY", "")
     },
+    "cerebras": {
+        "model": os.getenv("CEREBRAS_MODEL", "qwen-3-32b"),
+        "api_key": os.getenv("CEREBRAS_API_KEY", "")
+    },
     "keywell": {
         "model": os.getenv("KEYWELL_MODEL_ID", ""),
         "api_base": os.getenv("KEYWELL_ENDPOINT", ""),
@@ -144,6 +148,40 @@ def gemini_completion(
     )
 
 
+def cerebras_completion(
+    messages: list[dict[str, str]],
+    model: str | None = None,
+    api_key: str | None = None,
+    **kwargs
+) -> any:
+    """
+    Cerebras completion using direct litellm.completion() call.
+    
+    Args:
+        messages: OpenAI format messages
+        model: Model name (default: qwen-3-235b-a22b-thinking-2507)
+        api_key: Cerebras API key
+        **kwargs: Additional litellm.completion parameters
+        
+    Returns:
+        LiteLLM completion response
+    """
+    effective_model = model or DEFAULTS["cerebras"]["model"]
+    effective_api_key = api_key or DEFAULTS["cerebras"]["api_key"]
+    
+    # Format model for Cerebras provider if needed
+    if not effective_model.startswith("cerebras/"):
+        effective_model = f"cerebras/{effective_model}"
+    
+    return litellm.completion(
+        model=effective_model,
+        messages=messages,
+        api_key=effective_api_key,
+        timeout=kwargs.get("timeout", 60),
+        **{k: v for k, v in kwargs.items() if k != "timeout"}
+    )
+
+
 def keywell_completion(
     messages: list[dict[str, str]],
     model: str | None = None,
@@ -217,7 +255,7 @@ def completion(
     
     Args:
         messages: OpenAI format messages
-        provider: Provider name ("openai", "anthropic", "gemini", "keywell")
+        provider: Provider name ("openai", "anthropic", "gemini", "cerebras", "keywell")
         **kwargs: Provider-specific parameters
         
     Returns:
@@ -229,6 +267,8 @@ def completion(
         return anthropic_completion(messages, **kwargs)
     elif provider == "gemini":
         return gemini_completion(messages, **kwargs)
+    elif provider == "cerebras":
+        return cerebras_completion(messages, **kwargs)
     elif provider == "keywell":
         return keywell_completion(messages, **kwargs)
     else:

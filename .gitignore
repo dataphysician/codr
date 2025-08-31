@@ -28,3 +28,8 @@ Thumbs.db
 
 # ICD-10 tabular files (root or subfolders)
 icd10cm_tabular_*
+
+# Coding Agents
+.claude
+AGENTS.md
+CLAUDE.md

@@ -1,9 +1,20 @@
+"""
+ICD-10-CM Tree Navigation Interface
+==================================
+
+Standalone tree interface for hackathon demos and agentic workflows.
+Contains ICD tree parsing, navigation, and agent-friendly context methods.
+"""
+
 import xml.etree.ElementTree as ET
-from anytree import Node, RenderTree
+import time
+from anytree import Node
 
-filepath = "icd10cm_tabular_2026.txt"
 
-def parse_icd10_file(file_path):
+# Core ICD Tree Classes and Functions
+# ====================================
+
+def parse_icd10_file(file_path: str = "icd10cm_tabular_2026.txt"):
     """Parses the ICD-10-CM tabular XML file and builds a tree structure."""
     
     # Parse the XML file
@@ -13,7 +24,7 @@ def parse_icd10_file(file_path):
     # Create the root node for our tree
     root = Node("ICD-10-CM Root", code="ROOT", notes={}, element_type="root")
     
-    def parse_code_description(note_text):
+    def parse_code_description(note_text: str) -> list[tuple[str, str]]:
         """Parse code and description from note text, returning (code, description) tuples."""
         import re
         
@@ -42,12 +53,12 @@ def parse_icd10_file(file_path):
             # No codes found, return the whole text as description with empty code
             return [("", note_text)]
 
-    def extract_notes(element):
+    def extract_notes(element) -> dict[str, list[tuple[str, str]]]:
         """Extract notes from various note elements like includes, excludes1, etc."""
         notes = {}
         
         # Check for different types of notes
-        note_types = ['includes', 'excludes1', 'excludes2', 'useAdditionalCode', 'codeFirst', 'codeAlso']
+        note_types = ['includes', 'excludes1', 'excludes2', 'useAdditionalCode', 'codeFirst', 'codeAlso', 'sevenChrNote']
         
         for note_type in note_types:
             note_elements = element.findall(note_type)
@@ -101,53 +112,69 @@ def parse_icd10_file(file_path):
             for nested_diag in nested_diags:
                 create_diag_nodes(nested_diag, diag_node)
     
-    # Process chapters
-    chapters = root_element.findall('chapter')
-    for chapter_elem in chapters:
-        name_elem = chapter_elem.find('name')
-        desc_elem = chapter_elem.find('desc')
+    def create_section_nodes(section_element, parent_node):
+        """Create nodes for section elements (blocks)."""
+        desc_elem = section_element.find('desc')
         
-        if name_elem is not None and desc_elem is not None:
-            chapter_number = name_elem.text.strip() if name_elem.text else ""
-            chapter_desc = desc_elem.text.strip() if desc_elem.text else ""
-            chapter_name = f"Chapter {chapter_number}: {chapter_desc}"
+        if desc_elem is not None:
+            # Extract range from description (like "A00-A09")
+            section_desc = desc_elem.text.strip() if desc_elem.text else ""
             
-            # Extract notes for the chapter
-            chapter_notes = extract_notes(chapter_elem)
+            # Try to extract the range pattern
+            import re
+            range_match = re.match(r'([A-Z][0-9][0-9](?:\.[0-9A-X-]+)?-[A-Z][0-9][0-9](?:\.[0-9A-X-]+)?)', section_desc)
+            
+            if range_match:
+                section_code = range_match.group(1)
+            else:
+                # Fallback to section ID if no range found
+                section_id = section_element.get('id', '')
+                section_code = section_id if section_id else section_desc[:10]
+            
+            # Extract notes for this section
+            notes = extract_notes(section_element)
+            
+            # Create the section node
+            section_node = Node(
+                name=section_desc,
+                parent=parent_node,
+                code=section_code,
+                notes=notes,
+                element_type="block"
+            )
+            
+            # Process diagnosis elements within this section
+            diag_elements = section_element.findall('diag')
+            for diag_element in diag_elements:
+                create_diag_nodes(diag_element, section_node)
+    
+    # Process the XML structure
+    for chapter_element in root_element.findall('chapter'):
+        chapter_desc = chapter_element.find('desc')
+        if chapter_desc is not None:
+            chapter_name = chapter_desc.text.strip() if chapter_desc.text else ""
+            chapter_num = chapter_element.get('num', '')
+            
+            # Extract notes for this chapter
+            notes = extract_notes(chapter_element)
             
             # Create chapter node
             chapter_node = Node(
                 name=chapter_name,
                 parent=root,
-                code=chapter_number,
-                notes=chapter_notes,
+                code=chapter_num,
+                notes=notes,
                 element_type="chapter"
             )
             
-            # Process blocks within this chapter
-            blocks = chapter_elem.findall('section')
-            for block_elem in blocks:
-                block_id = block_elem.get('id', '')
-                desc_elem = block_elem.find('desc')
-                block_desc = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
-                
-                # Create block node
-                block_node = Node(
-                    name=block_desc,
-                    parent=chapter_node,
-                    code=block_id,
-                    notes={},
-                    element_type="block"
-                )
-                
-                # Process diagnoses within this block
-                diags = block_elem.findall('diag')
-                for diag_elem in diags:
-                    create_diag_nodes(diag_elem, block_node)
+            # Process sections within the chapter
+            section_elements = chapter_element.findall('section')
+            for section_element in section_elements:
+                create_section_nodes(section_element, chapter_node)
     
     return root
 
-# Efficient navigation helper functions
+
 class ICDTreeNavigator:
     """Efficient navigation utilities for the ICD tree structure."""
     
@@ -176,215 +203,326 @@ class ICDTreeNavigator:
                 elif element_type == 'diagnosis':
                     self.diagnoses[node.code] = node
     
-    def find_by_code(self, code):
+    def find_by_code(self, code: str):
         """O(1) lookup by ICD code."""
         return self.code_to_node.get(code)
     
-    def find_chapter(self, chapter_number):
-        """Find chapter by number (e.g., '1', '2')."""
-        return self.chapters.get(str(chapter_number))
-    
-    def find_block(self, block_code):
-        """Find block by code range (e.g., 'A00-A09')."""
-        return self.blocks.get(block_code)
-    
-    def find_diagnosis(self, diag_code):
-        """Find diagnosis by code (e.g., 'A00', 'A00.0')."""
-        return self.diagnoses.get(diag_code)
-    
-    def get_path_to_code(self, code):
+    def get_path_to_code(self, code: str) -> list[str] | None:
         """Get full path from root to specified code."""
         node = self.find_by_code(code)
         if node:
             return [ancestor.code for ancestor in node.path]
         return None
     
-    def get_all_diagnoses_in_block(self, block_code):
-        """Get all diagnoses within a block."""
-        block = self.find_block(block_code)
-        if not block:
-            return []
-        
-        from anytree import PreOrderIter
-        return [node for node in PreOrderIter(block) 
-                if getattr(node, 'element_type', None) == 'diagnosis']
-    
-    def get_all_diagnoses_in_chapter(self, chapter_number):
-        """Get all diagnoses within a chapter."""
-        chapter = self.find_chapter(chapter_number)
-        if not chapter:
-            return []
-        
-        from anytree import PreOrderIter
-        return [node for node in PreOrderIter(chapter) 
-                if getattr(node, 'element_type', None) == 'diagnosis']
-    
-    def search_by_name(self, search_term, case_sensitive=False):
-        """Search for nodes by name substring."""
-        from anytree import PreOrderIter
-        
-        if not case_sensitive:
-            search_term = search_term.lower()
-        
+    def search_by_name(self, search_term: str, max_results: int = 100) -> list:
+        """Search for codes by name/description using case-insensitive substring matching."""
         results = []
-        for node in PreOrderIter(self.root):
-            name = node.name if case_sensitive else node.name.lower()
-            if search_term in name:
+        search_term = search_term.lower()
+        
+        for code, node in self.code_to_node.items():
+            if hasattr(node, 'name') and node.name and search_term in node.name.lower():
                 results.append(node)
+                if len(results) >= max_results:
+                    break
         
         return results
-    
-    def get_siblings(self, code):
-        """Get all sibling nodes of the specified code."""
-        node = self.find_by_code(code)
-        if node and node.parent:
-            return [child for child in node.parent.children if child != node]
-        return []
-    
-    def get_ancestors_by_type(self, code, element_type):
-        """Get ancestor of specific type (e.g., chapter, block)."""
-        node = self.find_by_code(code)
-        if not node:
-            return None
-        
-        for ancestor in node.ancestors:
-            if getattr(ancestor, 'element_type', None) == element_type:
-                return ancestor
-        return None
 
-    def is_leaf(self, code):
-        """Check if a node is a leaf (terminal node with no children)."""
-        node = self.find_by_code(code)
-        if not node:
-            return False
-        return len(node.children) == 0
 
-# Helper functions for common operations
-def create_navigator(file_path="icd10cm_tabular_2026.txt"):
-    """Create an ICD tree and return a navigator instance."""
+def create_navigator(file_path: str = "icd10cm_tabular_2026.txt") -> ICDTreeNavigator:
+    """Create and return a fully initialized navigator."""
     root = parse_icd10_file(file_path)
     return ICDTreeNavigator(root)
 
-def demo_efficient_navigation():
-    """Demonstrate efficient navigation methods."""
-    nav = create_navigator()
-    
-    print("=== Efficient Navigation Demo ===\n")
-    
-    # 1. Direct code lookup (O(1))
-    print("1. Direct code lookup:")
-    a00 = nav.find_by_code('A00')
-    print(f"   A00: {a00.name if a00 else 'Not found'}")
-    
-    a00_0 = nav.find_diagnosis('A00.0')
-    print(f"   A00.0: {a00_0.name if a00_0 else 'Not found'}")
-    
-    # 2. Get path to diagnosis
-    print(f"\n2. Path to A00.0:")
-    path = nav.get_path_to_code('A00.0')
-    if path:
-        for i, code in enumerate(path):
-            node = nav.find_by_code(code)
-            indent = "   " * i
-            print(f"{indent}{code}: {node.name}")
-    
-    # 3. Find parent chapter and block
-    print(f"\n3. Find parents of A00.0:")
-    chapter = nav.get_ancestors_by_type('A00.0', 'chapter')
-    block = nav.get_ancestors_by_type('A00.0', 'block')
-    print(f"   Chapter: {chapter.name if chapter else 'None'}")
-    print(f"   Block: {block.name if block else 'None'}")
-    
-    # 4. Get all diagnoses in a block
-    print(f"\n4. All diagnoses in block A00-A09 (first 5):")
-    block_diags = nav.get_all_diagnoses_in_block('A00-A09')
-    for diag in block_diags[:5]:
-        print(f"   {diag.code}: {diag.name}")
-    print(f"   ... and {len(block_diags) - 5} more")
-    
-    # 5. Search by name
-    print(f"\n5. Search for 'diabetes' (first 3 results):")
-    diabetes_results = nav.search_by_name('diabetes')
-    for result in diabetes_results[:3]:
-        print(f"   {result.code}: {result.name}")
-    print(f"   ... found {len(diabetes_results)} total matches")
-    
-    # 6. Get siblings
-    print(f"\n6. Siblings of A00:")
-    siblings = nav.get_siblings('A00')
-    print(f"   Found {len(siblings)} siblings (first 3):")
-    for sib in siblings[:3]:
-        print(f"   {sib.code}: {sib.name}")
 
-    return nav
+# Agent-Friendly Navigation Functions
+# ===================================
 
-# --- Main Execution ---
+def _get_children_direct(node) -> list[dict[str, str]]:
+    """Helper function to get children directly from a node."""
+    children = []
+    for child in node.children:
+        child_info = {
+            'code': child.code,
+            'name': child.name,
+            'element_type': getattr(child, 'element_type', 'unknown')
+        }
+        children.append(child_info)
+    return children
+
+
+def get_ancestors_with_context(navigator: ICDTreeNavigator, code: str) -> list[dict[str, str]]:
+    """
+    Get ancestor hierarchy with context for LLM prompting.
+    
+    Returns:
+        List of ancestor nodes with code, name, and element_type for context
+    """
+    node = navigator.find_by_code(code)
+    if not node:
+        return []
+    
+    ancestors = []
+    current = node
+    
+    # Walk up the tree to collect ancestors
+    while current and current.parent:
+        ancestor_info = {
+            'code': current.parent.code,
+            'name': current.parent.name,
+            'element_type': getattr(current.parent, 'element_type', 'unknown')
+        }
+        ancestors.append(ancestor_info)
+        current = current.parent
+    
+    return list(reversed(ancestors))  # Root to current order
+
+
+def get_children_with_context(navigator: ICDTreeNavigator, code: str) -> list[dict[str, str]]:
+    """
+    Get child nodes with context for LLM decision making.
+    
+    Returns:
+        List of child nodes with code, name, and element_type
+    """
+    node = navigator.find_by_code(code)
+    
+    # Handle chapter lookups by number
+    if not node and code.isdigit():
+        chapters = get_chapters_for_selection(navigator)
+        chapter_num = int(code)
+        if 1 <= chapter_num <= len(chapters):
+            # Get the actual chapter node
+            root = navigator.code_to_node.get('ROOT')
+            if root and chapter_num <= len(root.children):
+                node = root.children[chapter_num - 1]
+    
+    if not node:
+        return []
+    
+    children = []
+    for child in node.children:
+        child_info = {
+            'code': child.code,
+            'name': child.name,
+            'element_type': getattr(child, 'element_type', 'unknown')
+        }
+        children.append(child_info)
+    
+    return children
+
+
+def get_chapters_for_selection(navigator: ICDTreeNavigator) -> list[dict[str, str]]:
+    """
+    Get all chapters for initial agent selection.
+    
+    Returns:
+        List of chapter nodes for agent to choose from
+    """
+    chapters = []
+    
+    # Get root node and find its chapter children
+    root = navigator.code_to_node.get('ROOT')
+    if root:
+        for i, child in enumerate(root.children):
+            if getattr(child, 'element_type', None) == 'chapter':
+                # Use chapter number as code (1-based index)
+                chapter_num = str(i + 1)
+                chapter_info = {
+                    'code': chapter_num,
+                    'name': child.name,
+                    'element_type': 'chapter',
+                    'actual_node_code': child.code  # Store the actual empty code for navigation
+                }
+                chapters.append(chapter_info)
+    
+    return chapters
+
+
+def get_node_details(navigator: ICDTreeNavigator, code: str) -> dict[str, any]:
+    """
+    Get comprehensive node details for agent context.
+    
+    Returns:
+        Complete node information including ancestors, children, and notes
+    """
+    node = navigator.find_by_code(code)
+    
+    # Handle chapter lookups by number
+    if not node and code.isdigit():
+        chapters = get_chapters_for_selection(navigator)
+        chapter_num = int(code)
+        if 1 <= chapter_num <= len(chapters):
+            # Get the actual chapter node
+            root = navigator.code_to_node.get('ROOT')
+            if root and chapter_num <= len(root.children):
+                node = root.children[chapter_num - 1]
+                # Use the chapter number as the display code
+                code = str(chapter_num)
+    
+    if not node:
+        return {'error': f'Code {code} not found'}
+    
+    return {
+        'current_node': {
+            'code': code,  # Use the lookup code (could be chapter number)
+            'name': node.name,
+            'element_type': getattr(node, 'element_type', 'unknown')
+        },
+        'ancestors': get_ancestors_with_context(navigator, node.code),
+        'children': _get_children_direct(node),
+        'has_children': len(node.children) > 0,
+        'is_leaf': len(node.children) == 0,
+        'path_to_root': [code] if getattr(node, 'element_type', None) == 'chapter' else navigator.get_path_to_code(node.code) or []
+    }
+
+
+def find_codes_by_search(navigator: ICDTreeNavigator, search_term: str, max_results: int = 10) -> list[dict[str, str]]:
+    """
+    Search for codes by name for agent exploration.
+    
+    Returns:
+        List of matching nodes with context
+    """
+    results = navigator.search_by_name(search_term, max_results)
+    
+    search_results = []
+    for node in results:
+        result_info = {
+            'code': node.code,
+            'name': node.name,
+            'element_type': getattr(node, 'element_type', 'unknown')
+        }
+        search_results.append(result_info)
+    
+    return search_results
+
+
+def create_simple_navigator(file_path: str = "icd10cm_tabular_2026.txt") -> ICDTreeNavigator:
+    """Create navigator instance for hackathon demos."""
+    return create_navigator(file_path)
+
+
+# Demo Function
+# =============
+
+def demo_simple_navigation():
+    """Demonstrate agent workflow with LLM context at each traversal step."""
+    print("=== Agent Traversal Context Demo ===\n")
+    print("This demo shows the context provided to an LLM at each decision point.\n")
+    
+    # Create navigator
+    print("Building ICD-10-CM tree and navigation indexes...")
+    start_time = time.time()
+    navigator = create_simple_navigator()
+    build_time = time.time() - start_time
+    print(f"Build time: {build_time:.2f} seconds\n")
+    
+    # Simulate medical document context
+    medical_document = "Patient presents with Type 1 diabetes mellitus with diabetic nephropathy. HbA1c is elevated at 9.2%. Patient shows proteinuria and decreased kidney function with GFR at 14 which clearly meets CKD-4 criteria."
+    print(f"📄 Medical Document Context:")
+    print(f"   {medical_document}\n")
+    
+    # Step 1: Initial chapter selection context
+    print("🤖 LLM DECISION POINT 1: Chapter Selection")
+    print("-" * 50)
+    chapters = get_chapters_for_selection(navigator)
+    print(f"Context sent to LLM:")
+    print(f"Medical Document: {medical_document}")
+    print(f"Available Chapters ({len(chapters)}):")
+    for chapter in chapters:  # Show relevant chapters
+        print(f"   Chapter {chapter['code']}: {chapter['name']}")
+    print(f"   ... and {len(chapters) - 8} more")
+    print("LLM sees the medical_document and the available choices for the next step and decides the next node/s.") # NOTE: Code this part where the LLM calls a client API.
+    print(f"\n[LLM would select: Chapter 4 - Endocrine diseases]")
+    
+    # Step 2: Navigate to Chapter 4 - show context for next decision
+    print(f"\n🤖 LLM DECISION POINT 2: Chapter 4 Exploration")
+    print("-" * 50)
+    chapter4_details = get_node_details(navigator, '4') # TODO: Make this part dynamic
+    if 'error' not in chapter4_details: # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Context sent to LLM:")
+        print(f"Medical Document: {medical_document}")
+        print(f"Established Context: ROOT") # TODO: Do not include ROOT as an ancestor
+        print(f"Current Position: {chapter4_details['current_node']['name']}") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Available Children ({len(chapter4_details['children'])}):") # TODO: Make the variables generic for dynamic calls/reusability
+        for child in chapter4_details['children']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {child['code']}: {child['name']}")
+        print(f"\n[LLM would select: E08-E13 - Diabetes mellitus]") # TODO: LLM could return a Tuple, just the code (for passing along the node traversal), and the desc, which is for reporting as context/ancestry.
+    
+    # Step 3: Navigate to diabetes block - show context for next decision
+    print(f"\n🤖 LLM DECISION POINT 3: Diabetes Block Exploration")
+    print("-" * 50)
+    diabetes_details = get_node_details(navigator, 'E08-E13')
+    if 'error' not in diabetes_details:
+        print(f"Context sent to LLM:")
+        print(f"Medical Document: {medical_document}")
+        print(f"Ancestor Context:") # TODO: Put the ancestors before the current code so that the LLM can understand that the medical document is grounded on the already established ancestor diagnosis.
+        for ancestor in diabetes_details['ancestors']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {ancestor['code']}: {ancestor['name']} ({ancestor['element_type']})")
+        print(f"Current Position: {diabetes_details['current_node']['name']}") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Available Children ({len(diabetes_details['children'])}):") # TODO: Make the variables generic for dynamic calls/reusability
+        for child in diabetes_details['children']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {child['code']}: {child['name']}")
+        print(f"\n[LLM would select: E10 - Type 1 diabetes mellitus]") # TODO: LLM could return a Tuple, just the code (for passing along the node traversal), and the desc, which is for reporting as context/ancestry.
+    
+    # Step 4: Navigate to E10 - show context for next decision  
+    print(f"\n🤖 LLM DECISION POINT 4: Type 1 Diabetes Exploration")
+    print("-" * 50)
+    e10_details = get_node_details(navigator, 'E10')
+    if 'error' not in e10_details: # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Context sent to LLM:")
+        print(f"Medical Document: {medical_document}")
+        print(f"Full Path: {' → '.join(e10_details['path_to_root'])}") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Ancestor Context:")
+        for ancestor in e10_details['ancestors']:
+            print(f"   {ancestor['code']}: {ancestor['name']} ({ancestor['element_type']})")
+        print(f"Available Children ({len(e10_details['children'])}):") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Current Position: {e10_details['current_node']['name']}") # TODO: Make the variables generic for dynamic calls/reusability
+        for child in e10_details['children']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {child['code']}: {child['name']}")
+        print(f"\n[LLM would select: E10.2 - with kidney complications]")
+    
+    # Step 5: Navigate to E10.2 - show context for final decision
+    print(f"\n🤖 LLM DECISION POINT 5: Kidney Complications")
+    print("-" * 50)
+    e10_2_details = get_node_details(navigator, 'E10.2')
+    if 'error' not in e10_2_details: # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Context sent to LLM:")
+        print(f"Medical Document: {medical_document}")
+        print(f"Full Path: {' → '.join(e10_2_details['path_to_root'])}") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Ancestor Context:")
+        for ancestor in e10_2_details['ancestors']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {ancestor['code']}: {ancestor['name']} ({ancestor['element_type']})")
+        print(f"Current Position: {e10_2_details['current_node']['name']}") # TODO: Make the variables generic for dynamic calls/reusability
+        print(f"Available Children ({len(e10_2_details['children'])}):")
+        for child in e10_2_details['children']: # TODO: Make the variables generic for dynamic calls/reusability
+            print(f"   {child['code']}: {child['name']}")
+        print(f"\n[LLM would select: E10.21 - diabetic nephropathy]")
+    
+    # Step 6: Final code - E10.21
+    print(f"\n✅ FINAL DECISION: Reached Target Code")
+    print("-" * 50)
+    e10_21_details = get_node_details(navigator, 'E10.21')
+    if 'error' not in e10_21_details:
+        print(f"Final Code: {e10_21_details['current_node']['code']}")
+        print(f"Description: {e10_21_details['current_node']['name']}")
+        print(f"Complete Path: {' → '.join(e10_21_details['path_to_root'])}")
+        print(f"Is Leaf Node: {e10_21_details['is_leaf']}")
+        print(f"✓ Perfect match for documented condition!")
+    
+    print(f"\n=== Agent Context Functions Available ===")
+    print("• create_simple_navigator() - Create navigator instance")
+    print("• get_chapters_for_selection(nav) - Step 1: Chapter selection context")
+    print("• get_node_details(nav, code) - Each step: Complete context for LLM")
+    print("• get_ancestors_with_context(nav, code) - Hierarchy for reasoning")
+    print("• get_children_with_context(nav, code) - Options for next step")
+    print("• find_codes_by_search(nav, term) - Alternative: direct search")
+    
+    print(f"\n💡 LLM Prompt Pattern:")
+    print("   Given medical document + current position + ancestors + children")
+    print("   → LLM decides which child(ren) to traverse next")
+    print("   → Repeat until appropriate specificity reached")
+
+
 if __name__ == "__main__":
-    file_path = "icd10cm_tabular_2026.txt" # Path to your file
-    
-    print("=== ICD-10-CM Tree Parser ===\n")
-    
-    # Parse and create navigator
-    print("Parsing XML and building navigation indexes...")
-    navigator = demo_efficient_navigation()
-    
-    print(f"\n=== Additional Navigation Examples ===\n")
-    
-    # Example: Access notes and detailed information
-    print("Detailed information for E10 (Type 1 diabetes mellitus):")
-    e10 = navigator.find_diagnosis('E10')
-    if e10:
-        print(f"  Code: {e10.code}")
-        print(f"  Name: {e10.name}")
-        print(f"  Notes available: {list(e10.notes.keys())}")
-        if e10.notes:
-            for note_type, note_list in e10.notes.items():
-                print(f"    {note_type}:")
-                for code, description in note_list[:2]:  # Show first 2 examples
-                    if code:
-                        print(f"      - {description} ({code})")
-                    else:
-                        print(f"      - {description}")
-                if len(note_list) > 2:
-                    print(f"      ... and {len(note_list) - 2} more")
-        print(f"  Children: {len(e10.children)} subcategories")
-        
-        # Show parent hierarchy
-        chapter = navigator.get_ancestors_by_type('E10', 'chapter')
-        block = navigator.get_ancestors_by_type('E10', 'block')
-        print(f"  Chapter: {chapter.name if chapter else 'None'}")
-        print(f"  Block: {block.name if block else 'None'}")
-    
-    # Performance comparison
-    import time
-    
-    print(f"\n=== Performance Comparison ===")
-    
-    # Measure indexed lookup performance
-    start = time.time()
-    for _ in range(1000):
-        node = navigator.find_by_code('A00.0')
-    indexed_time = time.time() - start
-    
-    # Measure tree traversal performance (simulating without index)
-    from anytree import PreOrderIter
-    start = time.time()
-    for _ in range(10):  # Fewer iterations because it's much slower
-        for node in PreOrderIter(navigator.root):
-            if getattr(node, 'code', '') == 'A00.0':
-                break
-    traversal_time = (time.time() - start) * 100  # Scale to compare with 1000 iterations
-    
-    print(f"1000 indexed lookups: {indexed_time:.4f} seconds")
-    print(f"1000 tree traversals: {traversal_time:.4f} seconds")
-    print(f"Speedup: {traversal_time/indexed_time:.1f}x faster with indexing")
-    
-    # --- Final Statistics ---
-    print(f"\n=== Final Statistics ===")
-    total_nodes = sum(1 for _ in RenderTree(navigator.root))
-    print(f"Total nodes: {total_nodes}")
-    print(f"Chapters: {len(navigator.chapters)}")
-    print(f"Blocks: {len(navigator.blocks)}")
-    print(f"Diagnoses: {len(navigator.diagnoses)}")
-    print(f"Index build time: Completed during initialization")
-    print(f"Memory usage: {len(navigator.code_to_node)} codes indexed")
+    demo_simple_navigation()
