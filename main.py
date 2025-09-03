@@ -6,7 +6,7 @@ make litellm.completion() calls while switching between providers.
 """
 
 from llm_client import (
-    openai_completion, anthropic_completion, gemini_completion, keywell_completion,
+    openai_completion, anthropic_completion, gemini_completion,
     completion, chat, get_response_text
 )
 
@@ -50,15 +50,6 @@ class SimpleAgent:
         self.conversation_history.append({"role": "assistant", "content": agent_response})
         return agent_response
     
-    def chat_keywell(self, user_message: str, **kwargs) -> str:
-        """Chat using Keywell (direct litellm.completion call)."""
-        self.conversation_history.append({"role": "user", "content": user_message})
-        
-        response = keywell_completion(self.conversation_history, **kwargs)
-        agent_response = get_response_text(response)
-        
-        self.conversation_history.append({"role": "assistant", "content": agent_response})
-        return agent_response
     
     def chat_any(self, user_message: str, provider: str = "openai", **kwargs) -> str:
         """Chat using any provider via generic completion function."""
@@ -80,8 +71,7 @@ def demo_direct_calls():
     providers = [
         ("OpenAI", lambda: openai_completion(messages)),
         ("Anthropic", lambda: anthropic_completion(messages)),
-        ("Gemini", lambda: gemini_completion(messages)),
-        ("Keywell", lambda: keywell_completion(messages))
+        ("Gemini", lambda: gemini_completion(messages))
     ]
     
     for provider_name, completion_func in providers:
@@ -103,8 +93,7 @@ def demo_agent_provider_switching():
     test_cases = [
         ("OpenAI", agent.chat_openai, "Hello! What's the capital of France?"),
         ("Anthropic", agent.chat_anthropic, "That's correct. What about Germany?"), 
-        ("Gemini", agent.chat_gemini, "Good. Now what about Japan?"),
-        ("Keywell", agent.chat_keywell, "Thank you for all the answers!")
+        ("Gemini", agent.chat_gemini, "Good. Now what about Japan?")
     ]
     
     for provider_name, chat_method, message in test_cases:
@@ -121,11 +110,11 @@ def demo_workflow_with_different_providers():
     """Demonstrate a workflow using different providers for different tasks."""
     print("=== Workflow with Different Providers Demo ===\n")
     
-    # Workflow: Research (Keywell) -> Analysis (OpenAI) -> Creative (Anthropic) -> Summary (Gemini)
+    # Workflow: Research (OpenAI) -> Analysis (OpenAI) -> Creative (Anthropic) -> Summary (Gemini)
     workflow_steps = [
         {
             "step": "Research",
-            "provider": "keywell",
+            "provider": "openai",
             "prompt": "List 3 key benefits of renewable energy sources."
         },
         {
@@ -169,7 +158,7 @@ def demo_convenience_functions():
     
     test_message = "What is machine learning in one sentence?"
     
-    providers = ["openai", "anthropic", "gemini", "keywell"]
+    providers = ["openai", "anthropic", "gemini"]
     
     for provider in providers:
         print(f"Quick chat with {provider}:")
@@ -216,19 +205,6 @@ response = litellm.completion(
 )
         ''',
         
-        "Keywell": '''
-response = litellm.completion(
-    model=f"mydbx/{os.getenv('KEYWELL_MODEL_ID', '')}",
-    messages=[{"role": "user", "content": "Hello!"}],
-    api_base=os.getenv("KEYWELL_ENDPOINT"),
-    api_key=os.getenv("DATABRICKS_API_KEY"), 
-    optional_params={
-        "sid": os.getenv("KEYWELL_SID", ""),
-        "session_id": "optional-session-id"
-    },
-    timeout=60
-)
-        '''
     }
     
     for provider, code in patterns.items():
@@ -257,10 +233,10 @@ def main():
     
     print("=== Key Benefits ===")
     print("• Thin wrapper over direct litellm.completion() calls")
-    print("• Easy provider switching: openai_completion() → keywell_completion()")
+    print("• Easy provider switching: openai_completion() → anthropic_completion()")
     print("• Environment variable defaults with runtime overrides")
     print("• Direct access to raw LiteLLM patterns when needed")
-    print("• Provider-specific parameter handling (e.g., Keywell optional_params)")
+    print("• Provider-specific parameter handling for different models")
     print("• OpenAI message format compatibility across all providers")
 
 

@@ -7,8 +7,11 @@ and navigating the ICD-10 tree structure using the existing llm_client API.
 """
 
 import json
+import os
 from icd_tree import ICDTreeNavigator, create_simple_navigator, get_node_details, get_chapters_for_selection
 from llm_client import completion, get_response_text
+
+
 
 
 def create_medical_document_message(medical_document: str) -> dict[str, str]:
@@ -157,7 +160,7 @@ def process_medical_document_with_llm(
         medical_document: The medical document text
         navigator: ICD tree navigator instance  
         current_code: Current position code (None for initial selection)
-        provider: LLM provider to use ("openai", "anthropic", "gemini", "keywell")
+        provider: LLM provider to use ("openai", "anthropic", "gemini", "cerebras")
         **llm_kwargs: Additional parameters for the LLM call
         
     Returns:
@@ -185,6 +188,12 @@ def process_medical_document_with_llm(
             response_text = response_text.replace('```json', '').replace('```', '').strip()
         elif response_text.startswith('```'):
             response_text = response_text.replace('```', '').strip()
+        
+        # Extract just the JSON array part if there's extra text
+        import re
+        json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group(0)
             
         selections = json.loads(response_text)
         
@@ -204,8 +213,8 @@ def process_medical_document_with_llm(
         return selections
         
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"   ❌ Failed to parse LLM response: {e}")
-        print(f"   Raw response: {response_text}")
+        print(f"   ❌ JSON PARSING ERROR: {e}")
+        print(f"   📄 Raw LLM Response: {response_text}")
         return []
 
 
@@ -281,7 +290,47 @@ def navigate_with_agent(
         )
         
         if not selections:
-            print(f"   ❌ No valid selections from LLM - stopping navigation")
+            print(f"   ❌ NAVIGATION HALTED: No valid selections from LLM")
+            print(f"   📋 Reason: LLM response could not be parsed or contained no valid selections")
+            
+            # Show available children and clinical guidance
+            if current_code:
+                children_details = get_node_details(navigator, current_code)
+                if 'children' in children_details and children_details['children']:
+                    children_list = []
+                    for child in children_details['children']:
+                        children_list.append(f"{child['code']}: {child['name']}")
+                    print(f"   📋 Available Children:\n{chr(10).join(children_list)}")
+                    
+                    # Provide clinical guidance based on current position
+                    print(f"\n   🩺 CLINICAL GUIDANCE:")
+                    print(f"   To proceed with coding, additional clinical information may be needed:")
+                    
+                    current_name = children_details['current_node']['name']
+                    if "fracture" in current_name.lower():
+                        print(f"   • Is this an initial encounter, subsequent encounter, or sequela?")
+                        print(f"   • Is the fracture displaced or non-displaced?")
+                        print(f"   • Which specific anatomical location/pole is affected?")
+                        print(f"   • Is this an open or closed fracture?")
+                    elif "diabetes" in current_name.lower():
+                        print(f"   • What specific complications are present (retinopathy, nephropathy, etc.)?")
+                        print(f"   • Is this with or without complications?")
+                        print(f"   • What is the severity/stage of complications?")
+                    elif "asthma" in current_name.lower() or "respiratory" in current_name.lower():
+                        print(f"   • Is this mild, moderate, or severe?")
+                        print(f"   • Is this intermittent or persistent?")
+                        print(f"   • Are there acute exacerbations present?")
+                        print(f"   • What triggers are involved (allergic, non-allergic)?")
+                    elif "hypertension" in current_name.lower():
+                        print(f"   • Is this primary (essential) or secondary hypertension?")
+                        print(f"   • Are there target organ complications?")
+                        print(f"   • Is this benign or malignant?")
+                    else:
+                        print(f"   • Review clinical documentation for specific manifestations")
+                        print(f"   • Identify anatomical location, severity, or encounter type")
+                        print(f"   • Determine if additional qualifiers apply")
+                        
+                    print(f"   • Consult clinical notes and diagnostic reports for specificity")
             break
             
         print(f"   🧠 LLM Decision: {len(selections)} option(s)")
@@ -292,10 +341,30 @@ def navigate_with_agent(
         selected = selections[0]
         next_code = selected['node']
         
+        # Check if LLM decided to stop navigation
+        if next_code == "STOP":
+            print(f"   🛑 NAVIGATION HALTED: LLM decided to stop")
+            print(f"   📋 Reason: {selected['description']}")
+            if 'citation' in selected and selected['citation']:
+                print(f"   📄 Available Options: \"{selected['citation']}\"")
+            
+            print(f"\n   🩺 CLINICAL GUIDANCE:")
+            print(f"   The LLM determined that the medical documentation is insufficient")
+            print(f"   to distinguish between the available subcategories. Consider:")
+            print(f"   • Reviewing additional clinical notes or diagnostic reports")
+            print(f"   • Obtaining more specific details about the condition")
+            print(f"   • Clarifying anatomical location, severity, or encounter type")
+            print(f"   • Using 'unspecified' codes when clinical details are truly unavailable")
+            print(f"   💡 This indicates appropriate clinical judgment to avoid miscoding")
+            break
+        
         # Verify the selection is valid
         node_details = get_node_details(navigator, next_code)
         if 'error' in node_details:
-            print(f"   ❌ Invalid selection {next_code}: {node_details['error']}")
+            print(f"   ❌ NAVIGATION HALTED: Invalid selection")
+            print(f"   📋 Selected Code: {next_code}")
+            print(f"   🚫 Error: {node_details['error']}")
+            print(f"   💡 This indicates the LLM selected a code not available in the current context")
             break
             
         # Display the navigation step
@@ -315,9 +384,24 @@ def navigate_with_agent(
         
         current_code = next_code
         
-        # Check if we've reached a leaf node or specific enough diagnosis
-        if node_details['is_leaf'] or len(node_details.get('children', [])) == 0:
-            print(f"   🎯 Reached final diagnosis: {current_code}")
+        # Check if we've reached a leaf node or maximum specificity
+        # For ICD-10, final codes are typically diagnosis elements without children
+        # Block codes (like S60-S69) are not final codes even if they're 7 characters
+        is_final_code = (
+            node_details['is_leaf'] or 
+            len(node_details.get('children', [])) == 0 or
+            (len(current_code) >= 7 and node_details['current_node']['element_type'] == 'diagnosis')
+        )
+        
+        if is_final_code:
+            print(f"   🎯 NAVIGATION COMPLETE: Reached final diagnosis")
+            print(f"   📋 Final Code: {current_code}")
+            if len(node_details.get('children', [])) == 0:
+                print(f"   💡 Reason: No further subcategories available (leaf node)")
+            elif len(current_code) >= 7 and node_details['current_node']['element_type'] == 'diagnosis':
+                print(f"   💡 Reason: Maximum ICD-10 specificity reached (7+ characters)")
+            else:
+                print(f"   💡 Reason: Node marked as leaf in hierarchy")
             break
     
     # Display complete trajectory summary
@@ -398,16 +482,109 @@ def batch_process_documents(
 
 if __name__ == "__main__":
     # Demo usage
-    medical_document = """Patient presents with Type 1 diabetes mellitus with diabetic nephropathy. 
-    HbA1c is elevated at 9.2%. Patient shows proteinuria and decreased kidney function with GFR at 14 
-    which clearly meets CKD-4 criteria."""
-    
+    # medical_document = """Patient presents with Type 1 diabetes mellitus with diabetic nephropathy. 
+    # HbA1c is elevated at 9.2%. Patient shows proteinuria and decreased kidney function with GFR at 14 
+    # which clearly meets CKD-4 criteria."""
+    medical_document ="""
+Chief Complaint:
+“Pain and swelling in my left wrist after a fall.”
+
+History of Present Illness:
+Patient reports falling onto an outstretched left hand earlier today while [walking / sports activity]. Immediately noted pain and swelling around the wrist. Difficulty moving the hand due to pain. No loss of consciousness. No open wounds seen.
+
+Past Medical History:
+Denies prior fractures of this wrist. No significant chronic illnesses reported.
+
+Medications:
+None regularly. Took acetaminophen at home.
+
+Allergies:
+None known.
+
+Family/Social History:
+Lives with family, right-hand dominant. No tobacco, alcohol, or drug use reported.
+
+Review of Systems (focused):
+
+Musculoskeletal: Pain, swelling, limited movement of left wrist.
+
+Neurological: No numbness or tingling reported.
+
+General: No fever or systemic complaints.
+
+Physical Exam (as observed):
+
+Left wrist visibly swollen, tender over distal radius.
+
+Limited range of motion due to pain.
+
+No obvious deformity noted.
+
+Sensation intact in fingers, capillary refill <2 seconds.
+
+Imaging:
+X-ray of the left wrist reportedly shows a fracture near the distal radius, likely the scaphoid. No mention of displacement or open wound.
+
+Assessment:
+Patient with wrist injury after fall, x-ray consistent with fracture of the distal radius, closed type. No evidence of neurovascular compromise.
+
+Plan (to be confirmed by attending):
+
+Immobilization with splint.
+
+Pain management.
+
+Orthopedic consultation for definitive management.
+
+Instructions given to keep arm elevated, ice as tolerated.
+"""
+    medical_document2 = """
+Chief Complaint:
+“Cough and shortness of breath on and off for a while.”
+
+History of Present Illness:
+Patient reports having had frequent respiratory infections for over 2 years. Episodes described as recurrent cough, wheezing, and chest tightness, usually worse with cold weather or when exposed to smoke/dust. States that symptoms have been ongoing for years, with gradual persistence of daily cough. Prior spirometry reportedly showed reduced FEV1 with partial reversibility. Findings consistent with airway obstruction noted over multiple visits. No recent acute flare-up reported. Currently denies fever or chills.
+
+Past Medical History:
+Known history of asthma since childhood. Patient recalls multiple episodes of “bronchitis” in the past, treated with antibiotics and inhalers.
+No recent hospital admissions reported.
+
+Medications:
+Patient states using an inhaler “as needed.” Specific name not recalled. Reports occasional use of cough syrup in the past.
+
+Allergies:
+Denies drug allergies.
+
+Family/Social History:
+Father with history of asthma.
+Non-smoker currently, but exposed to secondhand smoke at home.
+Works indoors, reports dust exposure at workplace.
+
+Review of Systems (limited):
+Respiratory: Chronic cough, intermittent wheeze, shortness of breath on exertion.
+General: No recent weight loss, no fever.
+Cardiovascular: Denies chest pain.
+Physical Exam (as observed):
+Patient speaking in full sentences, no acute distress.
+Mild wheeze noted on expiration.
+No cyanosis.
+
+Assessment:
+Patient with history of asthma and long-standing episodes of recurrent respiratory infections likely obstructive in nature, currently presenting with persistent cough and wheezing.No signs of acute exacerbation at this time.
+Plan (to be confirmed by attending):
+
+Continue current inhaler use as prescribed.
+Monitor for worsening symptoms (fever, increased shortness of breath).
+Attending to evaluate for possible need of maintenance therapy.
+Patient advised to avoid smoke exposure.
+"""
+
     print("="*80)
     print("🏥 SIMPLE AGENT ACTIONS DEMO - ICD-10 Navigation")
     print("="*80)
     
     # Navigate with agent
-    result = navigate_with_agent(medical_document, provider="openai", model="gpt-5-mini")
+    result = navigate_with_agent(medical_document, provider="cerebras", model="qwen-3-235b-a22b-instruct-2507")#"llama-4-maverick-17b-128e-instruct")
     
     print(f"\n" + "="*80)
     print(f"📋 FINAL RESULTS")
@@ -417,6 +594,11 @@ if __name__ == "__main__":
     print(f"📈 Navigation Steps: {result['total_steps']}")
     print(f"🗺️  Complete Trajectory: {result.get('trajectory_summary', 'N/A')}")
     print(f"✅ Navigation Complete: {result['completed']}")
+    
+    if not result['completed']:
+        print(f"\n⚠️  NAVIGATION STATUS:")
+        print(f"   Navigation was halted before reaching a final diagnosis code.")
+        print(f"   Review the step-by-step output above for specific halt reasons.")
     
     # Display step-by-step breakdown
     if result['navigation_path']:

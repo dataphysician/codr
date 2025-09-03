@@ -8,7 +8,6 @@ for agents to switch between providers while using the direct LiteLLM interface.
 
 import os
 import litellm
-from keywell import setup_keywell_handler
 
 
 # Provider defaults - can be overridden via environment variables or function parameters
@@ -29,21 +28,7 @@ DEFAULTS = {
         "model": os.getenv("CEREBRAS_MODEL", "qwen-3-32b"),
         "api_key": os.getenv("CEREBRAS_API_KEY", "")
     },
-    "keywell": {
-        "model": os.getenv("KEYWELL_MODEL_ID", ""),
-        "api_base": os.getenv("KEYWELL_ENDPOINT", ""),
-        "api_key": os.getenv("KEYWELL_PAT_TOKEN", ""),
-        "sid": os.getenv("KEYWELL_SID", "")
-    }
 }
-
-
-def _ensure_keywell_handler():
-    """Ensure Keywell custom handler is registered with LiteLLM."""
-    try:
-        setup_keywell_handler()
-    except Exception as e:
-        print(f"Warning: Could not setup Keywell handler: {e}")
 
 
 def openai_completion(
@@ -182,69 +167,6 @@ def cerebras_completion(
     )
 
 
-def keywell_completion(
-    messages: list[dict[str, str]],
-    model: str | None = None,
-    api_base: str | None = None,
-    api_key: str | None = None,
-    sid: str | None = None,
-    session_id: str | None = None,
-    **kwargs
-) -> any:
-    """
-    Keywell completion using direct litellm.completion() call.
-    
-    Parameter mapping:
-        - api_base ← url_endpoint (Keywell Endpoint)
-        - api_key ← pat_token (Keywell PAT Token)
-        - model ← mydbx/{model_id} (Keywell model for both session init and responses)
-        - optional_params.sid ← sid (Keywell SID)
-        - optional_params.session_id ← session_id (generated from session initialization)
-    
-    Args:
-        messages: OpenAI format messages
-        model: Keywell model ID (required via KEYWELL_MODEL_ID env var)
-        api_base: Keywell endpoint URL (url_endpoint)
-        api_key: Keywell PAT token (pat_token)
-        sid: Keywell SID (goes in optional_params)
-        session_id: Session ID from initialization (goes in optional_params)
-        **kwargs: Additional litellm.completion parameters
-        
-    Returns:
-        LiteLLM completion response
-    """
-    # Ensure Keywell handler is registered
-    _ensure_keywell_handler()
-    
-    effective_model = model or DEFAULTS["keywell"]["model"]
-    effective_api_base = api_base or DEFAULTS["keywell"]["api_base"]
-    effective_api_key = api_key or DEFAULTS["keywell"]["api_key"]
-    effective_sid = sid or DEFAULTS["keywell"]["sid"]
-    
-    # Format model for mydbx provider if needed
-    if not effective_model.startswith("mydbx/"):
-        effective_model = f"mydbx/{effective_model}"
-    
-    # Build optional_params
-    optional_params = {
-        "sid": effective_sid,
-        **(kwargs.get("optional_params", {}))
-    }
-    
-    if session_id:
-        optional_params["session_id"] = session_id
-    
-    return litellm.completion(
-        model=effective_model,
-        messages=messages,
-        api_base=effective_api_base,
-        api_key=effective_api_key,
-        optional_params=optional_params,
-        timeout=kwargs.get("timeout", 60),
-        **{k: v for k, v in kwargs.items() if k not in ["timeout", "optional_params"]}
-    )
-
-
 def completion(
     messages: list[dict[str, str]],
     provider: str = "openai",
@@ -255,7 +177,7 @@ def completion(
     
     Args:
         messages: OpenAI format messages
-        provider: Provider name ("openai", "anthropic", "gemini", "cerebras", "keywell")
+        provider: Provider name ("openai", "anthropic", "gemini", "cerebras")
         **kwargs: Provider-specific parameters
         
     Returns:
@@ -269,8 +191,6 @@ def completion(
         return gemini_completion(messages, **kwargs)
     elif provider == "cerebras":
         return cerebras_completion(messages, **kwargs)
-    elif provider == "keywell":
-        return keywell_completion(messages, **kwargs)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
