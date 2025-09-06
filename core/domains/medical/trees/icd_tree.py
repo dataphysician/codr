@@ -9,10 +9,12 @@ Contains ICD tree parsing, navigation, and agent-friendly context methods.
 from __future__ import annotations
 
 import re
-import time
 import xml.etree.ElementTree as ET
 from typing import Any
 from anytree import Node
+
+# Import Protocol interfaces
+from core import NodeId, NodeView
 
 # -------------------------------------------------------------------
 # Canonical patterns (shared meaning across the system)
@@ -38,8 +40,14 @@ def normalize_code(s: str) -> str:
     """
     Accept '(X..)' or 'X..' → return normalized inner 'X..'; raise if invalid.
     Used to sanitize codes extracted from notes and any external lookup.
+    Special cases: ROOT and chapter numbers (1-22) are allowed.
     """
     s = s.strip()
+    
+    # Special cases for ROOT, chapter numbers, and chapter_ format
+    if s == "ROOT" or (s.isdigit() and 1 <= int(s) <= 22) or (s.startswith("chapter_") and s.replace("chapter_", "").isdigit() and 1 <= int(s.replace("chapter_", "")) <= 22):
+        return s
+        
     if s.startswith("(") and s.endswith(")"):
         s = s[1:-1].strip()
     if not re.match(NORMALIZED_CODE_RE, s):
@@ -204,11 +212,12 @@ def parse_icd10_file(file_path: str = "icd10cm_tabular_2026.xml") -> Node:
                 create_diag_nodes(diag_element, section_node)
 
     # Build chapters → blocks → diagnoses
-    for chapter_element in root_element.findall("chapter"):
+    for chapter_index, chapter_element in enumerate(root_element.findall("chapter"), 1):
         chapter_desc = chapter_element.find("desc")
         if chapter_desc is not None:
             chapter_name = chapter_desc.text.strip() if chapter_desc.text else ""
-            chapter_num = chapter_element.get("num", "")
+            # Assign sequential chapter numbers since XML has no num attribute
+            chapter_num = str(chapter_index)
 
             # Extract notes for this chapter
             notes = extract_notes(chapter_element)
@@ -231,7 +240,12 @@ def parse_icd10_file(file_path: str = "icd10cm_tabular_2026.xml") -> Node:
 
 
 class ICDTreeNavigator:
-    """Efficient navigation utilities for the ICD tree structure."""
+    """
+    ICD tree navigator that implements TreeIndex Protocol.
+    
+    Provides efficient navigation utilities for the ICD tree structure
+    while being compatible with the generic TreeIndex interface.
+    """
 
     def __init__(self, root: Node) -> None:
         self.root: Node = root
@@ -279,6 +293,115 @@ class ICDTreeNavigator:
                 if len(results) >= max_results:
                     break
         return results
+    
+    # ================================================================
+    # TreeIndex Protocol Implementation
+    # ================================================================
+    
+    def normalize_id(self, raw: str) -> NodeId:
+        """Normalize a raw string to a canonical NodeId."""
+        normalized = normalize_code(raw)
+        return NodeId(normalized)
+    
+    def get(self, node_id: NodeId) -> NodeView | None:
+        """Get a node by its ID, or None if not found."""
+        node_id_str = str(node_id)
+        node = self.find_by_code(node_id_str)
+        
+        # Handle chapter_N format by mapping to N
+        if not node and node_id_str.startswith("chapter_"):
+            chapter_num = node_id_str.replace("chapter_", "")
+            if chapter_num.isdigit():
+                node = self.find_by_code(chapter_num)
+        
+        if not node:
+            return None
+        
+        # Extract notes from node if available
+        notes = {}
+        if hasattr(node, 'notes') and node.notes:
+            notes = node.notes
+        
+        return NodeView(
+            id=node_id,
+            name=getattr(node, 'name', ''),
+            element_type=getattr(node, 'element_type', 'unknown'),
+            notes=notes
+        )
+    
+    def children(self, node_id: NodeId) -> list[NodeId]:
+        """Get direct children of a node."""
+        node_id_str = str(node_id)
+        node = self.find_by_code(node_id_str)
+        
+        # Handle chapter_N format by mapping to N
+        if not node and node_id_str.startswith("chapter_"):
+            chapter_num = node_id_str.replace("chapter_", "")
+            if chapter_num.isdigit():
+                node = self.find_by_code(chapter_num)
+                
+        if not node:
+            return []
+        
+        child_ids = []
+        for child in node.children:
+            if hasattr(child, 'code') and child.code:
+                child_ids.append(NodeId(child.code))
+        return child_ids
+    
+    def ancestors(self, node_id: NodeId) -> list[NodeId]:
+        """Get ancestors from parent to root (ordered parent -> grandparent -> root)."""
+        node = self.find_by_code(str(node_id))
+        if not node:
+            return []
+        
+        ancestors = []
+        current = node.parent
+        while current and hasattr(current, 'code') and current.code:
+            ancestors.append(NodeId(current.code))
+            current = current.parent
+        return ancestors
+    
+    def path_to_root(self, node_id: NodeId) -> list[NodeId]:
+        """Get full path from node to root (ordered node -> parent -> root)."""
+        path = [node_id]  # Start with the node itself
+        path.extend(self.ancestors(node_id))  # Add ancestors
+        return path
+    
+    def is_leaf(self, node_id: NodeId) -> bool:
+        """Check if node has no children."""
+        return len(self.children(node_id)) == 0
+    
+    def details(self, node_id: NodeId) -> dict[str, Any]:
+        """Get comprehensive details for a node (convenience for agents)."""
+        node_view = self.get(node_id)
+        if not node_view:
+            return {}
+        
+        return {
+            "id": str(node_view.id),
+            "name": node_view.name,
+            "element_type": node_view.element_type,
+            "notes": node_view.notes,
+            "is_leaf": self.is_leaf(node_id),
+            "children_count": len(self.children(node_id)),
+            "ancestors": [str(aid) for aid in self.ancestors(node_id)],
+            "path": [str(pid) for pid in self.path_to_root(node_id)]
+        }
+    
+    def search(self, text: str, k: int = 50) -> list[NodeView]:
+        """Search for nodes matching text query."""
+        nodes = self.search_by_name(text, max_results=k)
+        node_views = []
+        
+        for node in nodes:
+            if hasattr(node, 'code') and node.code:
+                node_id = NodeId(node.code)
+                node_view = self.get(node_id)
+                if node_view:
+                    node_views.append(node_view)
+        
+        return node_views
 
 
 def create_navigator(file_path: str = "icd10cm_tabular_2026.xml") -> ICDTreeNavigator:
@@ -374,7 +497,7 @@ def get_chapters_for_selection(navigator: ICDTreeNavigator) -> list[dict[str, st
                     "code": str(i + 1),            # 1-based index for UI selection
                     "name": child.name,
                     "element_type": "chapter",
-                    "actual_node_code": child.code,  # stored for navigation if needed
+                    "actual_node_code": child.code if child.code else str(i + 1),  # fallback to index if no code
                 }
                 chapters.append(chapter_info)
     return chapters
@@ -468,179 +591,4 @@ def is_ancestor(navigator: ICDTreeNavigator, ancestor_code: str, code: str) -> b
 
 
 
-# demo.py (or append to icd_tree.py below the definitions)
-
-import time
-from icd_tree import (
-    create_simple_navigator,
-    get_chapters_for_selection,
-    get_node_details,
-)
-
-def _print_children(children, limit=12):
-    n = len(children)
-    take = min(n, limit)
-    for child in children[:take]:
-        print(f"   {child['code']}: {child['name']}")
-    more = n - take
-    if more > 0:
-        print(f"   ... and {more} more")
-
-def demo_simple_navigation():
-    """Demonstrate agent workflow with LLM context at each traversal step."""
-    print("=== Agent Traversal Context Demo ===\n")
-    print("This demo shows the context provided to an LLM at each decision point.\n")
-
-    # Create navigator
-    print("Building ICD-10-CM tree and navigation indexes...")
-    start_time = time.time()
-    navigator = create_simple_navigator()
-    build_time = time.time() - start_time
-    print(f"Build time: {build_time:.2f} seconds\n")
-
-    # Simulated medical document context for the agent
-    medical_document = (
-        "Patient presents with Type 1 diabetes mellitus with diabetic nephropathy. "
-        "HbA1c is elevated at 9.2%. Patient shows proteinuria and decreased kidney "
-        "function with GFR at 14 which clearly meets CKD-4 criteria."
-    )
-    print("📄 Medical Document Context:")
-    print(f"   {medical_document}\n")
-
-    # ----------------------------
-    # DECISION POINT 1: Chapter(s)
-    # ----------------------------
-    print("🤖 LLM DECISION POINT 1: Chapter Selection")
-    print("-" * 50)
-    chapters = get_chapters_for_selection(navigator)
-    print("Context sent to LLM:")
-    print(f"Medical Document: {medical_document}")
-    print(f"Available Chapters ({len(chapters)}):")
-    _print_children(chapters, limit=8)
-    print("LLM sees the medical_document and the available choices for the next step "
-          "and decides the next node(s).  [Stub: replace with actual LLM call]\n")
-    print("[LLM would select: Chapter 4 - Endocrine, nutritional and metabolic diseases]")
-
-    # ----------------------------
-    # DECISION POINT 2: Chapter 4
-    # ----------------------------
-    print("\n🤖 LLM DECISION POINT 2: Chapter 4 Exploration")
-    print("-" * 50)
-    chapter4_details = get_node_details(navigator, "4")  # LLM-chosen; can be dynamic
-    if "error" in chapter4_details:
-        print("Could not load Chapter 4 details. Stopping demo.")
-        return
-
-    print("Context sent to LLM:")
-    print(f"Medical Document: {medical_document}")
-    print(f"Current Position: {chapter4_details['current_node']['name']}")
-    children = chapter4_details["children"]
-    print(f"Available Children ({len(children)}):")
-    _print_children(children)
-    print("\n[LLM would select: E08-E13 - Diabetes mellitus]")
-
-    # ---------------------------------
-    # DECISION POINT 3: Diabetes block
-    # ---------------------------------
-    print("\n🤖 LLM DECISION POINT 3: Diabetes Block Exploration")
-    print("-" * 50)
-    diabetes_details = get_node_details(navigator, "E08-E13")
-    if "error" in diabetes_details:
-        print("Could not load 'E08-E13' block. Your XML vintage may differ.")
-        return
-
-    print("Context sent to LLM:")
-    print(f"Medical Document: {medical_document}")
-    print("Ancestor Context:")
-    for a in diabetes_details["ancestors"]:
-        # Avoid printing ROOT here
-        if a["code"] != "ROOT":
-            print(f"   {a['code']}: {a['name']} ({a['element_type']})")
-    print(f"Current Position: {diabetes_details['current_node']['name']}")
-    children = diabetes_details["children"]
-    print(f"Available Children ({len(children)}):")
-    _print_children(children)
-    print("\n[LLM would select: E10 - Type 1 diabetes mellitus]")
-
-    # -----------------------------
-    # DECISION POINT 4: E10 branch
-    # -----------------------------
-    print("\n🤖 LLM DECISION POINT 4: Type 1 Diabetes Exploration")
-    print("-" * 50)
-    e10_details = get_node_details(navigator, "E10")
-    if "error" in e10_details:
-        print("Could not load 'E10'. Stopping demo.")
-        return
-
-    path = " → ".join([p for p in (e10_details["path_to_root"] or []) if p != "ROOT"])
-    print("Context sent to LLM:")
-    print(f"Medical Document: {medical_document}")
-    if path:
-        print(f"Full Path: {path}")
-    print("Ancestor Context:")
-    for a in e10_details["ancestors"]:
-        if a["code"] != "ROOT":
-            print(f"   {a['code']}: {a['name']} ({a['element_type']})")
-    print(f"Current Position: {e10_details['current_node']['name']}")
-    children = e10_details["children"]
-    print(f"Available Children ({len(children)}):")
-    _print_children(children)
-    print("\n[LLM would select: E10.2 - with kidney complications]")
-
-    # ----------------------------------
-    # DECISION POINT 5: E10.2 sub-branch
-    # ----------------------------------
-    print("\n🤖 LLM DECISION POINT 5: Kidney Complications")
-    print("-" * 50)
-    e10_2_details = get_node_details(navigator, "E10.2")
-    if "error" in e10_2_details:
-        print("Could not load 'E10.2'. Stopping demo.")
-        return
-
-    path = " → ".join([p for p in (e10_2_details["path_to_root"] or []) if p != "ROOT"])
-    print("Context sent to LLM:")
-    print(f"Medical Document: {medical_document}")
-    if path:
-        print(f"Full Path: {path}")
-    print("Ancestor Context:")
-    for a in e10_2_details["ancestors"]:
-        if a["code"] != "ROOT":
-            print(f"   {a['code']}: {a['name']} ({a['element_type']})")
-    print(f"Current Position: {e10_2_details['current_node']['name']}")
-    children = e10_2_details["children"]
-    print(f"Available Children ({len(children)}):")
-    _print_children(children)
-    print("\n[LLM would select: E10.21 - diabetic nephropathy]")
-
-    # --------------------
-    # FINAL: E10.21 leaf?
-    # --------------------
-    print("\n✅ FINAL DECISION: Reached Target Code")
-    print("-" * 50)
-    e10_21_details = get_node_details(navigator, "E10.21")
-    if "error" in e10_21_details:
-        print("Could not load 'E10.21'. Your XML vintage may differ.")
-        return
-
-    print(f"Final Code: {e10_21_details['current_node']['code']}")
-    print(f"Description: {e10_21_details['current_node']['name']}")
-    final_path = " → ".join([p for p in (e10_21_details["path_to_root"] or []) if p != 'ROOT'])
-    print(f"Complete Path: {final_path}")
-    print(f"Is Leaf Node: {e10_21_details['is_leaf']}")
-    print("✓ Perfect match for documented condition!\n")
-
-    print("=== Agent Context Functions Available ===")
-    print("• create_simple_navigator() - Create navigator instance")
-    print("• get_chapters_for_selection(nav) - Step 1: Chapter selection context")
-    print("• get_node_details(nav, code) - Each step: Complete context for LLM")
-    print("• get_ancestors_with_context(nav, code) - Hierarchy for reasoning")
-    print("• get_children_with_context(nav, code) - Options for next step")
-    print("• find_codes_by_search(nav, term) - Alternative: direct search\n")
-
-    print("💡 LLM Prompt Pattern:")
-    print("   Given medical document + current position + ancestors + children")
-    print("   → LLM decides which child(ren) to traverse next")
-    print("   → Repeat until appropriate specificity reached")
-
-if __name__ == "__main__":
-    demo_simple_navigation()
+# Demo code removed to avoid circular imports

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "anytree>=2.13.0",
+    "burr[cli,graphviz,postgresql,tracking]>=0.40.2",
     "dspy-ai>=3.0.2",
-    "litellm[proxy]>=1.76.0",
+    "graphviz>=0.21",
 ]

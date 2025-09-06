@@ -1,3 +1,15 @@
+"""
+ICD-10-CM Traversal Rules and Data Structures
+
+This module contains the core business logic, data structures, and functions for 
+ICD-10-CM traversal. It defines ICD-specific types and implements the medical
+coding rules without depending on the core architecture.
+
+Architecture:
+- icd_rules.py: Contains ICD-specific business logic, data structures, and functions
+- icd_traversal_engine.py: Implements TraversalEngine protocol, adapts ICD rules to core types
+"""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -29,9 +41,15 @@ def to_inner_code(s: str) -> str:
     """
     Accept '(X..)', 'X..' → return normalized inner 'X..'.
     Use this on all external inputs before navigator lookups.
+    Special cases: ROOT and chapter numbers (1-22) are allowed.
     """
     import re
     s = s.strip()
+    
+    # Special cases for ROOT, chapter numbers, and chapter_ format
+    if s == "ROOT" or (s.isdigit() and 1 <= int(s) <= 22) or (s.startswith("chapter_") and s.replace("chapter_", "").isdigit() and 1 <= int(s.replace("chapter_", "")) <= 22):
+        return s
+        
     if s.startswith("(") and s.endswith(")"):
         s = s[1:-1].strip()
     if not re.match(NORMALIZED_CODE_RE, s):
@@ -81,6 +99,9 @@ class RunContext(BaseModel):
     This context is separate from any orchestration engine (Burr, etc.).
     """
     model_config = ConfigDict(frozen=False)
+
+    # Clinical context (preserved from Burr orchestrator)
+    clinical_note: str = Field(default="", description="Clinical documentation for DSPy agents")
 
     # Guard accumulators
     blocked_families: set[str] = Field(default_factory=set)  # from excludes2
@@ -195,7 +216,18 @@ def resolve(navigator: Any, code: str) -> Any:
     This is a pass-through to avoid duplicating indexes.
     """
     inner = to_inner_code(code)
-    node = navigator.find_by_code(inner)
+    # Use navigator.get() method which handles chapter_ format mapping
+    from core import NodeId
+    node_view = navigator.get(NodeId(inner))
+    if node_view is None:
+        # Fallback to direct lookup for backward compatibility
+        node = navigator.find_by_code(inner)
+        if node is None:
+            raise KeyError(f"Unknown code node: {inner}")
+        return node
+    
+    # Convert NodeView back to raw node for traversal compatibility
+    node = navigator.find_by_code(inner) or navigator.find_by_code(inner.replace("chapter_", ""))
     if node is None:
         raise KeyError(f"Unknown code node: {inner}")
     return node
@@ -320,7 +352,11 @@ def ingest_notes_into_context(ctx: RunContext, node: Any) -> None:
 
     # codeFirst / useAdditionalCode
     ctx.add_prefixes(note_codes(node, "codeFirst"))
-    ctx.add_suffixes(note_codes(node, "useAdditionalCode"))
+    
+    # useAdditionalCode: both suffix constraints AND parallel seeds
+    use_additional_codes = note_codes(node, "useAdditionalCode")
+    ctx.add_suffixes(use_additional_codes)           # Constraint for validation
+    ctx.register_codealso(use_additional_codes)      # Parallel seed for direct targeting
 
     # seven-character requirement
     if has_seven_requirement(node):

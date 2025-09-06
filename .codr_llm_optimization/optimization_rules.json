@@ -1,0 +1,13 @@
+{
+  "E11.22": {
+    "node_id": "E11.22",
+    "feedback": "Focus on differential diagnosis between diabetic nephropathy and chronic kidney disease",
+    "model_override": "openai/gpt-4o",
+    "created_at": "2025-09-06T01:02:07.505146",
+    "optimized_prompt": null,
+    "performance_data": {
+      "uses": 0,
+      "success_rate": 0.0
+    }
+  }
+}
